@@ -36,6 +36,9 @@ import {
 } from "../contracts/skills.ts";
 
 const failed = (reason: SkillLoadFailed["reason"]) => new SkillLoadFailed({ reason });
+/** A failure message within SkillLoadFailed's 500 characters, however long the path it names. */
+const bounded = (message: string) =>
+  [...message].length <= 500 ? message : `${[...message].slice(0, 499).join("")}…`;
 /** Keep only the status the request returned and whether it reported a rate limit. */
 const rejected = (status: number, headers: Readonly<Record<string, string>>) =>
   new SkillLoadFailed({
@@ -567,15 +570,39 @@ const githubCatalog = (
                 const path = file.path.slice(directory.length);
                 if (!resourcePath(file.path) || !resourcePath(path) || file.mode === "120000")
                   return yield* failed("source");
-                return { path, content: yield* github.file(commit, file.path) };
+                // Name the file, so an author can tell which one to fix or exclude.
+                const content = yield* github.file(commit, file.path).pipe(
+                  Effect.mapError((error) =>
+                    Schema.is(SkillLoadFailed)(error) && error.reason === "encoding"
+                      ? new SkillLoadFailed({
+                          reason: "encoding",
+                          message: bounded(
+                            `GitHub file “${file.path}” is not valid UTF-8 text. Skill files must be text.`,
+                          ),
+                        })
+                      : error,
+                  ),
+                );
+                return { path, content };
               }),
             { concurrency: skillLoadLimits.concurrency },
           );
           const name = directory.slice(0, -1).split("/").at(-1);
-          return yield* skillFromFiles(
-            sources,
-            directory === "" || name === undefined ? {} : { name },
-          ).pipe(Effect.mapError(() => failed("document")));
+          return yield* skillFromFiles(sources, {
+            ...(directory === "" || name === undefined ? {} : { name }),
+            ...(directory === "" ? {} : { directory: directory.slice(0, -1) }),
+          }).pipe(
+            // The definition failure names the skill's SKILL.md and what is wrong with it.
+            Effect.mapError(
+              (invalid) =>
+                new SkillLoadFailed({
+                  reason: "document",
+                  message: bounded(
+                    `A skill from GitHub is not a valid skill document. ${invalid.message}`,
+                  ),
+                }),
+            ),
+          );
         }),
       { concurrency: 1 },
     );

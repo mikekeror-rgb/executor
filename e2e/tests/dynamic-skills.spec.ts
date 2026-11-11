@@ -193,9 +193,11 @@ export default defineApp({}, async (ctx) => ({
         );
         for (const malformed of ["github", "well-known"] as const) {
           yield* upstream.publish(3, { malformed });
-          expect((yield* api.request(actors.owner, "GET", `${base}/skill-bundle`)).status).toBe(
-            502,
-          );
+          const failed = yield* api.request(actors.owner, "GET", `${base}/skill-bundle`);
+          expect(failed.status).toBe(502);
+          // The failure names the skill document, so an author can tell which skill to fix.
+          if (malformed === "github")
+            expect(JSON.stringify(failed.body)).toContain("skills/github-guide/SKILL.md");
         }
         yield* upstream.publish(3, { broken: true });
         expect((yield* api.request(actors.owner, "GET", `${base}/skill-bundle`)).status).toBe(502);
